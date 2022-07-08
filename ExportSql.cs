@@ -5,7 +5,9 @@ using System.Data.SqlClient;
 using System.Data.SqlTypes;
 using System.IO;
 using System.Text;
-
+using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace ExportSql
 {
@@ -13,12 +15,10 @@ namespace ExportSql
 	{
 
 		[SqlProcedure]
-		public static void RowByRowSql2Csv(SqlString sql, SqlString filePath, SqlString fileName,
-			SqlInt32 includeHeader, SqlString delimeter, SqlInt32 useQuoteIdentifier, SqlInt32 overWriteExisting, SqlString encoding, SqlString dateformat)
-		{
 
-			filePath = FormatPath(filePath.ToString());
-			fileName = FormatFileName(fileName.ToString());
+		public static void RowByRowSql2Csv(SqlString sql, SqlString filePath, SqlString fileName,SqlInt32 includeHeader, SqlString delimeter, SqlInt32 useQuoteIdentifier, SqlInt32 overWriteExisting, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlInt16 maxdop, SqlString distributeKeyColumn)
+		{
+			
 
 			//AvoidInjection
 			var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -32,9 +32,48 @@ namespace ExportSql
 
 			var RandomCTE = new String(stringChars);
 			var query = "WITH " + RandomCTE + " AS (" + sql.ToString() + ") SELECT * FROM " + RandomCTE; // to avoid sql injection use a randomCTE name
+
+			if (maxdop == 1)
+			{
+				
+				pRowByRowSql2Csv(query, filePath, fileName, includeHeader, delimeter, useQuoteIdentifier, overWriteExisting, encoding, dateformat, decimalSeparator,"serial");
+			}
+			else
+			{
+				int imaxdop = (int)maxdop;
+
+				ParallelLoopResult pr = Parallel.For(0, imaxdop, i =>
+				{
+					var sqlWhereParallelFilter = "";
+					sqlWhereParallelFilter = " WHERE FLOOR([" + distributeKeyColumn.ToString() + "]%" + imaxdop.ToString() + ") = " + i.ToString();
+
+					SqlString parafileName = fileName + "_" + i.ToString("000");
+					SqlString parasql = query + sqlWhereParallelFilter;
+
+					pRowByRowSql2Csv(parasql, filePath, parafileName, includeHeader, delimeter, useQuoteIdentifier, overWriteExisting, encoding, dateformat, decimalSeparator,"parallel");
+
+				});
+
+
+
+
+			}
+
+		}
+
+		private static void pRowByRowSql2Csv(SqlString inputsql, SqlString filePath, SqlString fileName,	SqlInt32 includeHeader, SqlString delimeter, SqlInt32 useQuoteIdentifier, SqlInt32 overWriteExisting, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlString mode)
+		{
+
+			string _connectionString ="";
+
+		    filePath = FormatPath(filePath.ToString());
+			fileName = FormatFileName(fileName.ToString());
+
+			var query = inputsql.ToString();
 			var vdelimiter = delimeter.ToString();
 			var vdateformat = dateformat.ToString();
 			var vuseQuoteIdentifier = useQuoteIdentifier.Value;
+			var vdecimalSeparator = decimalSeparator.ToString();
 
 			var fileNameWithPath = filePath + fileName;
 			var FullFileName = fileNameWithPath.ToString();
@@ -48,9 +87,38 @@ namespace ExportSql
 			else if (encoding != "")
 				encode = Encoding.GetEncoding(encoding.ToString());
 
+			
+			
 
-			using (SqlConnection sqlConnection = new SqlConnection("context connection=true"))
+			if (mode=="serial")
 			{
+				SqlConnectionStringBuilder connStrBuilder = new SqlConnectionStringBuilder();
+				connStrBuilder.ContextConnection = true;
+				_connectionString = connStrBuilder.ConnectionString;
+			}
+			if (mode == "parallel")
+			{
+
+				string srvName = ".\\DBA01";
+
+				SqlConnectionStringBuilder connStrBuilder = new SqlConnectionStringBuilder();
+				//build connection string, which will be used to execute sql in threads
+				connStrBuilder = new SqlConnectionStringBuilder();
+				connStrBuilder.DataSource = srvName;
+				connStrBuilder.IntegratedSecurity = true;
+				connStrBuilder.MultipleActiveResultSets = true;
+				connStrBuilder.Pooling = true;
+				//Enlisting will be done when connecting to server if transaction is enabled
+				connStrBuilder.Enlist = false;
+				_connectionString = connStrBuilder.ConnectionString;
+
+			}
+
+			using (SqlConnection sqlConnection = new SqlConnection(_connectionString))
+			{
+				var nfi = new NumberFormatInfo();
+				nfi.NumberDecimalSeparator = vdecimalSeparator;
+
 				sqlConnection.Open();
 				var sqr = new SqlCommand(query, sqlConnection);
 				var sdr = sqr.ExecuteReader();
@@ -84,7 +152,7 @@ namespace ExportSql
 						for (int i = 0; i < sdr.FieldCount; i++)
 						{
 							//var colval = sdr[i];
-							rowValues.Add(GetString(sdr[i], vdateformat, vuseQuoteIdentifier));
+							rowValues.Add(GetString(sdr[i], vdateformat, vuseQuoteIdentifier, nfi));
 
 						}
 
@@ -100,6 +168,7 @@ namespace ExportSql
 						rcount++;
 					}
 					sw.Flush();
+					return;
 				}
 				catch (Exception e)
 				{
@@ -115,8 +184,6 @@ namespace ExportSql
 
 			}
 		}
-
-
 		private static string FormatPath(string filePath)
 		{
 			if (Right(filePath, 1) == @"\")
@@ -149,9 +216,9 @@ namespace ExportSql
 		}
 
 
-		private static string GetString(object objValue, String dateformat, int useQuoteIdentifier)
+		private static string GetString(object objValue, String dateformat, int useQuoteIdentifier, NumberFormatInfo nfi)
 		{
-			string Numericaldelimiter = "#.000";
+			string NumericalFormat = "#.000";
 
 			if (objValue == null || Convert.IsDBNull(objValue))
 			{
@@ -172,12 +239,12 @@ namespace ExportSql
 			if (objValue is Decimal)
 			{
 				Decimal d = (Decimal)objValue;
-				return d.ToString(Numericaldelimiter).Replace(",", ".");
+				return d.ToString(NumericalFormat,nfi);
 			}
 			if (objValue is Double)
 			{
 				Double d = (Double)objValue;
-				return d.ToString(Numericaldelimiter).Replace(",", "."); ;
+				return d.ToString(NumericalFormat,nfi) ;
 			}
 
 			return objValue.ToString();
