@@ -2,20 +2,30 @@
 SQL CLR Libary to produce file output from SQL stored procedures.
 - Produce a CSV file output based on SQL Statement output. Example below produces as CSV file containing 1,2 with column headers 'A' & 'B', the file being  UTF-8 encoded
 ```SQL
-Exec Sql2Csv 
-	@sql = 'SELECT  1 as A, 2 as B',
-	@filePath = 'C:\Temp',
-	@fileName = 'Test.csv',
+DECLARE @sqlcommand nvarchar(MAX);
+DECLARE @filepath NVARCHAR(MAX);
+DECLARE @delimiter NCHAR(1);
+DECLARE @dateformat NVARCHAR(50);
+DECLARE @decimalSeparator CHAR(1);
+
+SET @sqlcommand = 'SELECT * from [SalesDB].[dbo].[Sales]';
+SET @filepath = 'C:\temp';
+SET @delimiter = '|';
+SET @dateformat = 'yyyy-MM-dd HH:mm:ss';
+SET @decimalSeparator = '.';
+
+Exec [dbo].[RowbyRowSql2Csv]
+	@sql = @sqlcommand,
+	@filePath = @filepath,
+	@fileName = 'SALES.CSV',
 	@includeHeader = 1,
-	@delimeter = ',',
+	@delimiter = @delimiter,
 	@UseQuoteIdentifier = 0,
-	@overWriteExisting = 1,
-	@Encoding = 'UTF-8' --C# encoding names
+	@overWriteExisting = True,
+	@Encoding = 'windows-1252',
+	@dateformat = @dateformat,
+	@decimalSeparator = @decimalSeparator,
+	@maxdop = 4,
+	@distributeKeyColumn='PRODUCT_KEY'; -- Must be an integer or bigint column (or a computed formula that return a int) ideally the rows should be evenlly balanced (the modulus operator on the maxdop is used to split data)
 ```
-- Create/Append to a file
-```SQL
-Exec WtiteToFile
-  @FileName = 'C:\Temp\Test.txt', 
-  @Data = 'Something to write to the file', 
-  @Append = 1 -- 1 = Append to file if exists, otherwise create a file, 0 = Create or overwrite file
-```
+
