@@ -1,6 +1,6 @@
 # ExportSql
 SQL CLR Libary to produce file output from SQL stored procedures.
-- Produce a CSV file output based on SQL Statement output. Example below produces as CSV file containing 1,2 with column headers 'A' & 'B', the file being  UTF-8 encoded
+- Produce a CSV file output based on SQL Statement output. Example below produces as CSV file with the Sales table data
 ```SQL
 DECLARE @sqlcommand nvarchar(MAX);
 DECLARE @filepath NVARCHAR(MAX);
