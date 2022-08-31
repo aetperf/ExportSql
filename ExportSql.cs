@@ -1,6 +1,7 @@
 using Microsoft.SqlServer.Server;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.SqlClient;
 using System.Data.SqlTypes;
 using System.IO;
@@ -8,6 +9,7 @@ using System.Text;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace ExportSql
 {
@@ -19,6 +21,8 @@ namespace ExportSql
 
 		public static void RowByRowSql2Csv(SqlString sql, SqlString filePath, SqlString fileName,SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlInt16 maxdop, SqlString distributeKeyColumn)
 		{
+
+			var DataTypesDict = new Dictionary<int, Type>();
 
 			filePath = FormatPath(filePath.ToString());
 			fileName = FormatFileName(fileName.ToString());
@@ -49,9 +53,9 @@ namespace ExportSql
 			var RandomCTE = new String(stringChars);
 			var query = "WITH " + RandomCTE + " AS (" + sql.ToString() + ") SELECT * FROM " + RandomCTE; // to avoid sql injection use a randomCTE name
 
-			// Init File and Write Header Only First
-			
-			pHeaderCsv(query, filePath, fileName, includeHeader, delimiter, useQuoteIdentifier, overWriteExisting, encoding);
+			// GetDataTypes for Eeach Column + Init File and Write Header Only First
+
+			DataTypesDict = pHeaderCsv(query, filePath, fileName, includeHeader, delimiter, useQuoteIdentifier, overWriteExisting, encoding);
 
 
 			if (maxdop == 1)
@@ -70,8 +74,10 @@ namespace ExportSql
 
 				SqlInt32 voverWriteExisting = 1;
 
+
 				ParallelLoopResult pr = Parallel.For(0, imaxdop, i =>
 				{
+					
 					var sqlWhereParallelFilter = "";
 					sqlWhereParallelFilter = " WHERE FLOOR(" + distributeKeyColumn.ToString() + "%" + imaxdop.ToString() + ") = " + i.ToString();
 
@@ -79,10 +85,11 @@ namespace ExportSql
 					SqlString parasql = query + sqlWhereParallelFilter;
 
 					pRowByRowSql2Csv(parasql, filePath, parafileName, delimiter, useQuoteIdentifier, encoding, dateformat, decimalSeparator, "parallel", servername);
-
+				
 				});
 
-							
+
+
 				// Merge temp files after parallel loop
 				for (int i = 0; i < imaxdop; i++)
 				{
@@ -127,10 +134,12 @@ namespace ExportSql
 
 		}
 
-		private static void pHeaderCsv(SqlString inputsql, SqlString filePath, SqlString fileName, SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding)
+		private static Dictionary<int,Type> pHeaderCsv(SqlString inputsql, SqlString filePath, SqlString fileName, SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding)
 		{
 
 			string _connectionString = "";
+
+			var DataTypesDict = new Dictionary<int, Type>();
 
 			filePath = FormatPath(filePath.ToString());
 			fileName = FormatFileName(fileName.ToString());
@@ -174,6 +183,7 @@ namespace ExportSql
 					for (int i = 0; i < sdr.FieldCount; i++)
 					{
 						columnNames.Add(sdr.GetName(i));
+						DataTypesDict.Add(i, sdr.GetFieldType(i));
 					}
 
 					if (includeHeader == 1)
@@ -181,6 +191,8 @@ namespace ExportSql
 						result = string.Join(vdelimiter, columnNames.ToArray());
 						sw.WriteLine(result);
 					}
+
+				
 
 				}
 				catch (Exception e)
@@ -194,6 +206,8 @@ namespace ExportSql
 					sw.Close();
 					sw.Dispose();
 				}
+
+				return DataTypesDict;
 
 			}
 		}
@@ -241,12 +255,14 @@ namespace ExportSql
 				connStrBuilder.DataSource = srvName;
 				connStrBuilder.ApplicationName = "CLRExportSQL";
 				//connStrBuilder.NetworkLibrary = "dbmslpcn";
+				
 				connStrBuilder.IntegratedSecurity = true;
-				connStrBuilder.MultipleActiveResultSets = true;
+				connStrBuilder.MultipleActiveResultSets = false;
 				connStrBuilder.Pooling = false;
-				connStrBuilder.ConnectRetryCount = 1;
-				connStrBuilder.ConnectTimeout = 30;
+				//connStrBuilder.ConnectRetryCount = 1;
+				connStrBuilder.ConnectTimeout = 120;
 				connStrBuilder.Enlist = false;
+				connStrBuilder.PacketSize = 32768;
 				_connectionString = connStrBuilder.ConnectionString;
 
 			}
@@ -259,7 +275,7 @@ namespace ExportSql
 				sqlConnection.Open();
 				var sqr = new SqlCommand(query, sqlConnection);
 				var sdr = sqr.ExecuteReader();
-				var sw = new StreamWriter(new FileStream(FullFileName, FileMode.Append, FileAccess.Write), encode);
+				var sw = new StreamWriter(new FileStream(FullFileName, FileMode.Append, FileAccess.Write), encode); //using stream (Conseil N Brero)
 				try
 				{
 
@@ -268,23 +284,33 @@ namespace ExportSql
 					string[] colarray;
 					colarray = new string[sdr.FieldCount];
 
+
+					//ParallelOptions poptions = new ParallelOptions();
+					//poptions.MaxDegreeOfParallelism = 6;
+
 					while (sdr.Read())
 					{
 						int rcount = 0;
+						
 
 						//loop over columns and format string regarding datatypes (sadly slow)
-						for (int i = 0; i < sdr.FieldCount; i++)
-						{								
+						for (int k = 0; k < sdr.FieldCount; k++)
+						//ParallelLoopResult loopResult = Parallel.For(0, sdr.FieldCount, poptions, k =>   // failed with mode=parallel
+						{
+
 							
-							colarray[i] = GetString(sdr[i], vdateformat, vuseQuoteIdentifier, nfi);
+							colarray[k] = GetString(sdr[k], vdateformat, vuseQuoteIdentifier, nfi);
 
 						}
+						//);
 
 						sw.WriteLine(string.Join(vdelimiter, colarray));
 						
 						rcount++;					
 
 					}
+
+
 					
 					return;
 				}
@@ -416,6 +442,58 @@ namespace ExportSql
 			
 				return objValue.ToString();
 			
+		}
+
+		private static string GetStringNew(int k, object objValue, String dateformat, int useQuoteIdentifier, NumberFormatInfo nfi)
+		{
+
+
+			if (objValue is int || objValue is long)
+			{
+				return objValue.ToString();
+			}
+
+			if (objValue is String)
+			{
+				if (useQuoteIdentifier == 1)
+				{
+					return "\"" + objValue.ToString().Replace("\"", "\\\"") + "\"";
+				}
+				else
+				{
+					return objValue.ToString();
+				}
+			}
+
+			if (objValue == null || Convert.IsDBNull(objValue))
+			{
+				return "";
+			}
+
+			if (objValue is DateTime)
+			{
+				DateTime dt = (DateTime)objValue;
+				return dt.ToString(dateformat);
+
+			}
+
+			if (objValue is Decimal)
+			{
+				string NumericalFormat = "0.0###";
+				Decimal d = (Decimal)objValue;
+
+				return d.ToString(NumericalFormat, nfi);
+			}
+
+			if (objValue is Double)
+			{
+				string NumericalFormat = "0.0#####";
+				Double d = (Double)objValue;
+				return d.ToString(NumericalFormat, nfi);
+			}
+
+			return objValue.ToString();
+
 		}
 	}
 }

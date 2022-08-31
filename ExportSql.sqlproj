@@ -8,7 +8,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectVersion>4.1</ProjectVersion>
     <ProjectGuid>{f93752a2-7538-4844-af63-2379c940f0ac}</ProjectGuid>
-    <DSP>Microsoft.Data.Tools.Schema.Sql.Sql140DatabaseSchemaProvider</DSP>
+    <DSP>Microsoft.Data.Tools.Schema.Sql.Sql150DatabaseSchemaProvider</DSP>
     <OutputType>Database</OutputType>
     <RootPath>
     </RootPath>
@@ -33,6 +33,8 @@
     <Recovery>SIMPLE</Recovery>
     <EnableFullTextSearch>False</EnableFullTextSearch>
     <Trustworthy>True</Trustworthy>
+    <PageVerify>CHECKSUM</PageVerify>
+    <DelayedDurability>DISABLED</DelayedDurability>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <OutputPath>bin\Release\</OutputPath>

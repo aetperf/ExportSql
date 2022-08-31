@@ -1,23 +1,27 @@
-﻿DECLARE @sqlcommand nvarchar(MAX);
+﻿
+
+DECLARE @sqlcommand nvarchar(MAX);
 DECLARE @filepath NVARCHAR(MAX);
-DECLARE @fileName NVARCHAR(MAX);
 DECLARE @delimiter NCHAR(1);
 DECLARE @dateformat NVARCHAR(50);
+DECLARE @decimalSeparator CHAR(1);
 
-
-SET @sqlcommand = 'SELECT * from [DWH_GRC].[dbo].[GRC_J_ACT]';
-SET @filepath = 'J:\csv';
-SET @fileName = 'DWH_GRC_GRC_J_ACT.CSV';
-SET @delimiter = ';';
+SET @sqlcommand = 'SELECT * from [SalesDB].[dbo].[Sales]';
+SET @filepath = 'C:\temp';
+SET @delimiter = '|';
 SET @dateformat = 'yyyy-MM-dd HH:mm:ss';
+SET @decimalSeparator = '.';
 
 Exec [dbo].[RowbyRowSql2Csv]
 	@sql = @sqlcommand,
 	@filePath = @filepath,
-	@fileName = @fileName,
-	@includeHeader = 0,
-	@delimeter = @delimiter,
+	@fileName = 'SALES.CSV',
+	@includeHeader = 1,
+	@delimiter = @delimiter,
 	@UseQuoteIdentifier = 0,
-	@overWriteExisting = 1,
+	@overWriteExisting = True,
 	@Encoding = 'windows-1252',
-	@dateformat = @dateformat;
+	@dateformat = @dateformat,
+	@decimalSeparator = @decimalSeparator,
+	@maxdop = 4,
+	@distributeKeyColumn='PRODUCT_KEY'; -- Must be an integer or bigint column (or a computed formula that return a int) ideally the rows should be evenlly balanced (the modulus operator on the maxdop is used to split data)
