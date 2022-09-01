@@ -102,26 +102,30 @@ namespace ExportSql
 					try
 					{
 
-						using (FileStream fsSource = new FileStream(pathSource,FileMode.Open, FileAccess.Read))
 						using (FileStream fsNew = new FileStream(pathNew, FileMode.Append, FileAccess.Write))
-						using (BufferedStream bs = new BufferedStream(fsSource))
 						{
-
-							// Read the source file into a byte array.
-							byte[] bytes = new byte[CHUNKSIZE];
-							
-							int n;
-
-							while ((n = bs.Read(bytes, 0, CHUNKSIZE)) != 0) //reading 32MB chunks at a time
+							using (FileStream fsSource = new FileStream(pathSource, FileMode.Open, FileAccess.Read))
+							using (BufferedStream bs = new BufferedStream(fsSource))
 							{
-								
-								fsNew.Write(bytes, 0, n); // Write the byte array to the other FileStream.
-								bs.Flush();   // flush th buffered stream
-							}															
-						}
 
-						// delete temp file
-						File.Delete(pathSource);
+								// Read the source file into a byte array.
+								byte[] bytes = new byte[CHUNKSIZE];
+
+								int n;
+
+								while ((n = bs.Read(bytes, 0, CHUNKSIZE)) != 0) //reading 32MB chunks at a time
+								{
+
+									fsNew.Write(bytes, 0, n); // Write the byte array to the other FileStream.
+									
+
+								}
+								fsNew.Flush();   // flush the buffered stream
+							}
+
+							// delete temp file
+							File.Delete(pathSource);
+						}
 					}
 					catch (FileNotFoundException ioEx)
 					{
