@@ -116,8 +116,7 @@ namespace ExportSql
 								while ((n = bs.Read(bytes, 0, CHUNKSIZE)) != 0) //reading 32MB chunks at a time
 								{
 
-									fsNew.Write(bytes, 0, n); // Write the byte array to the other FileStream.
-									
+									fsNew.Write(bytes, 0, n); // Write the byte array to the other FileStream.									
 
 								}
 								fsNew.Flush();   // flush the buffered stream
@@ -307,8 +306,8 @@ namespace ExportSql
 
 						}
 						//);
-
-						sw.WriteLine(string.Join(vdelimiter, colarray));
+						sw.WriteLineAsync(string.Join(vdelimiter, colarray));
+						//sw.WriteLine(string.Join(vdelimiter, colarray));
 						
 						rcount++;					
 
