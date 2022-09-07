@@ -10,6 +10,7 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
+//using System.Runtime.CompilerServices; //force inlining (KO)
 
 namespace ExportSql
 {
@@ -21,8 +22,6 @@ namespace ExportSql
 
 		public static void RowByRowSql2Csv(SqlString sql, SqlString filePath, SqlString fileName,SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlInt16 maxdop, SqlString distributeKeyColumn)
 		{
-
-			var DataTypesDict = new Dictionary<int, Type>();
 
 			filePath = FormatPath(filePath.ToString());
 			fileName = FormatFileName(fileName.ToString());
@@ -55,13 +54,13 @@ namespace ExportSql
 
 			// GetDataTypes for Eeach Column + Init File and Write Header Only First
 
-			DataTypesDict = pHeaderCsv(query, filePath, fileName, includeHeader, delimiter, useQuoteIdentifier, overWriteExisting, encoding);
+			var types = pHeaderCsv(query, filePath, fileName, includeHeader, delimiter, useQuoteIdentifier, overWriteExisting, encoding);
 
 
 			if (maxdop == 1)
 			{
 				
-				pRowByRowSql2Csv(query, filePath, fileName, delimiter, useQuoteIdentifier,  encoding, dateformat, decimalSeparator, "serial", servername);
+				pRowByRowSql2Csv(query, filePath, fileName, delimiter, useQuoteIdentifier,  encoding, dateformat, decimalSeparator, "serial", servername,types);
 			}
 			else
 			{
@@ -84,7 +83,7 @@ namespace ExportSql
 					SqlString parafileName = fileName + "_" + i.ToString("000");
 					SqlString parasql = query + sqlWhereParallelFilter;
 
-					pRowByRowSql2Csv(parasql, filePath, parafileName, delimiter, useQuoteIdentifier, encoding, dateformat, decimalSeparator, "parallel", servername);
+					pRowByRowSql2Csv(parasql, filePath, parafileName, delimiter, useQuoteIdentifier, encoding, dateformat, decimalSeparator, "parallel", servername, types);
 				
 				});
 
@@ -137,12 +136,12 @@ namespace ExportSql
 
 		}
 
-		private static Dictionary<int,Type> pHeaderCsv(SqlString inputsql, SqlString filePath, SqlString fileName, SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding)
+		private static TypeCode[] pHeaderCsv(SqlString inputsql, SqlString filePath, SqlString fileName, SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding)
 		{
 
 			string _connectionString = "";
 
-			var DataTypesDict = new Dictionary<int, Type>();
+			//var DataTypesDict = new Dictionary<int, Type>();
 
 			filePath = FormatPath(filePath.ToString());
 			fileName = FormatFileName(fileName.ToString());
@@ -179,6 +178,7 @@ namespace ExportSql
 				try
 				{
 
+					var types = new TypeCode[sdr.FieldCount];
 
 					var result = "";
 					var columnNames = new List<string>();
@@ -186,7 +186,8 @@ namespace ExportSql
 					for (int i = 0; i < sdr.FieldCount; i++)
 					{
 						columnNames.Add(sdr.GetName(i));
-						DataTypesDict.Add(i, sdr.GetFieldType(i));
+						types[i] = Type.GetTypeCode(sdr.GetFieldType(i));
+						//DataTypesDict.Add(i, sdr.GetFieldType(i));
 					}
 
 					if (includeHeader == 1)
@@ -195,7 +196,8 @@ namespace ExportSql
 						sw.WriteLine(result);
 					}
 
-				
+					return types;
+
 
 				}
 				catch (Exception e)
@@ -210,12 +212,12 @@ namespace ExportSql
 					sw.Dispose();
 				}
 
-				return DataTypesDict;
+				
 
 			}
 		}
 
-		private static void pRowByRowSql2Csv(SqlString inputsql, SqlString filePath, SqlString fileName, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlString mode, SqlString serverName)
+		private static void pRowByRowSql2Csv(SqlString inputsql, SqlString filePath, SqlString fileName, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlString mode, SqlString serverName, TypeCode[] types)
 		{
 
 			string _connectionString ="";
@@ -283,32 +285,30 @@ namespace ExportSql
 				{
 
 
-					
-					string[] colarray;
-					colarray = new string[sdr.FieldCount];
-
+					var colarray = new string[sdr.FieldCount];
+					//var strbuilder = new StringBuilder();
 
 					//ParallelOptions poptions = new ParallelOptions();
 					//poptions.MaxDegreeOfParallelism = 6;
-
+					
 					while (sdr.Read())
 					{
 						int rcount = 0;
-						
 
 						//loop over columns and format string regarding datatypes (sadly slow)
 						for (int k = 0; k < sdr.FieldCount; k++)
 						//ParallelLoopResult loopResult = Parallel.For(0, sdr.FieldCount, poptions, k =>   // failed with mode=parallel
 						{
 
-							
-							colarray[k] = GetString(sdr[k], vdateformat, vuseQuoteIdentifier, nfi);
+							colarray[k] = GetString(sdr[k], vdateformat, vuseQuoteIdentifier, nfi, types[k]);
+							//colarray[k] = sdr.GetValue(k).ToString();
 
 						}
+						 
 						//);
-						sw.WriteLineAsync(string.Join(vdelimiter, colarray));
-						//sw.WriteLine(string.Join(vdelimiter, colarray));
-						
+						//sw.WriteLineAsync(string.Join(vdelimiter, colarray));
+						sw.WriteLine(string.Join(vdelimiter, colarray));
+										
 						rcount++;					
 
 					}
@@ -395,55 +395,45 @@ namespace ExportSql
 			return value.Substring(value.Length - length);
 		}
 
-		private static string GetString(object objValue, String dateformat, int useQuoteIdentifier, NumberFormatInfo nfi)
+
+
+
+		//inlining ?
+		//[MethodImpl(MethodImplOptions.AggressiveInlining)] //== > KO slower
+		private static string GetString(object objValue, String dateformat, int useQuoteIdentifier, NumberFormatInfo nfi, TypeCode typecode)
 		{
 			
-
-			if(objValue is int || objValue is long)
+			switch(typecode)
 			{
-				return objValue.ToString();
-			}
-
-			if (objValue is String)
-			{
-				if (useQuoteIdentifier == 1)
-				{
-					return "\"" + objValue.ToString().Replace("\"", "\\\"") + "\"";
-				}
-				else
-				{
+	
+				case TypeCode.Int16:
+				case TypeCode.Int32:
+				case TypeCode.Int64:				
 					return objValue.ToString();
-				}
-			}
+				case TypeCode.DBNull:
+					return string.Empty;
+				case TypeCode.DateTime:
+					DateTime dt = (DateTime)objValue;
+					return dt.ToString(dateformat);
+				case TypeCode.Decimal:
+					string NumericalFormatDecimal = "0.0###";
+					var dec = (decimal)objValue;
+					return dec.ToString(NumericalFormatDecimal, nfi);
+				case TypeCode.Double:
+					string NumericalFormatDouble = "0.0#####";
+					var dbl = (double)objValue;
+					return dbl.ToString(NumericalFormatDouble, nfi);
+				default:
+					if (useQuoteIdentifier == 1)
+					{
+						return "\"" + objValue.ToString().Replace("\"", "\\\"") + "\"";
+					}
+					else
+					{
+						return objValue.ToString();
+					}
 
-			if (objValue == null || Convert.IsDBNull(objValue))
-			{
-				return "";
-			}
-
-			if (objValue is DateTime)
-			{
-				DateTime dt = (DateTime)objValue;
-				return dt.ToString(dateformat);
-
-			}
-
-			if (objValue is Decimal)
-			{
-				string NumericalFormat = "0.0###";
-				Decimal d = (Decimal)objValue;
-				
-				return d.ToString(NumericalFormat, nfi);
-			}
-
-			if (objValue is Double)				
-			{
-				string NumericalFormat = "0.0#####";
-				Double d = (Double)objValue;
-				return d.ToString(NumericalFormat, nfi);
-			}
-			
-				return objValue.ToString();
+			}			
 			
 		}
 
@@ -451,52 +441,36 @@ namespace ExportSql
 		{
 
 
-			if (objValue is int || objValue is long)
+			switch (objValue)
 			{
-				return objValue.ToString();
+
+				case int:
+				case long:
+					return Convert.ToString(objValue);
+				case null:
+					return string.Empty;
+				case DateTime:
+					DateTime dt = (DateTime)objValue;
+					return dt.ToString(dateformat);
+				case decimal:
+					string NumericalFormatDecimal = "0.0###";
+					var dec = (decimal)objValue;
+					return dec.ToString(NumericalFormatDecimal, nfi);
+				case double:
+					string NumericalFormatDouble = "0.0#####";
+					var dbl = (double)objValue;
+					return dbl.ToString(NumericalFormatDouble, nfi);
+				default:
+					if (useQuoteIdentifier == 1)
+					{
+						return "\"" + objValue.ToString().Replace("\"", "\\\"") + "\"";
+					}
+					else
+					{
+						return objValue.ToString();
+					}
+
 			}
-
-			if (objValue is String)
-			{
-				if (useQuoteIdentifier == 1)
-				{
-					return "\"" + objValue.ToString().Replace("\"", "\\\"") + "\"";
-				}
-				else
-				{
-					return objValue.ToString();
-				}
-			}
-
-			if (objValue == null || Convert.IsDBNull(objValue))
-			{
-				return "";
-			}
-
-			if (objValue is DateTime)
-			{
-				DateTime dt = (DateTime)objValue;
-				return dt.ToString(dateformat);
-
-			}
-
-			if (objValue is Decimal)
-			{
-				string NumericalFormat = "0.0###";
-				Decimal d = (Decimal)objValue;
-
-				return d.ToString(NumericalFormat, nfi);
-			}
-
-			if (objValue is Double)
-			{
-				string NumericalFormat = "0.0#####";
-				Double d = (Double)objValue;
-				return d.ToString(NumericalFormat, nfi);
-			}
-
-			return objValue.ToString();
-
 		}
 	}
 }
