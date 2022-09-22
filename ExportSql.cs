@@ -20,13 +20,20 @@ namespace ExportSql
 		
 		[SqlProcedure]
 
-		public static void RowByRowSql2Csv(SqlString sql, SqlString filePath, SqlString fileName,SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlInt16 maxdop, SqlString distributeKeyColumn, SqlString distributeMethod)
+		public static void RowByRowSql2Csv(SqlString sql, SqlString filePath, SqlString fileName,SqlInt32 includeHeader, SqlString delimiter, SqlInt32 useQuoteIdentifier, SqlBoolean overWriteExisting, SqlString encoding, SqlString dateformat, SqlString decimalSeparator, SqlInt16 maxdop, SqlString distributeKeyColumn, SqlString distributeMethod, Boolean mergeDistributedFile=true)
 		{
 
-			filePath = FormatPath(filePath.ToString());
-			fileName = FormatFileName(fileName.ToString());
-			var fileNameWithPath = filePath + fileName;
-			var FullFileName = fileNameWithPath.ToString();
+			var FullFileName = Path.Combine(filePath.ToString(), fileName.ToString());
+			try
+			{
+				File.Delete(FullFileName);
+			}
+			catch
+			{
+				SqlContext.Pipe.Send($"Impossible to delete = {FullFileName}");
+				return;
+
+			}
 			var nfi = new NumberFormatInfo();
 			nfi.NumberDecimalSeparator = decimalSeparator.ToString();
 
@@ -60,24 +67,24 @@ namespace ExportSql
 			Directory.CreateDirectory(dirpath);
 
 			SqlContext.Pipe.Send($"Temp Dir = {dirpath}");
+			var TempFullFileName = Path.Combine(dirpath, fileName.ToString());
 
 			// GetDataTypes for Eeach Column + Init File and Write Header Only First
-
 			string sformat = pHeaderCsv(query, dirpath, fileName, includeHeader, delimiter, useQuoteIdentifier, dateformat, decimalSeparator, overWriteExisting, encoding);
 
 
-			if (maxdop == 1)
+			if (maxdop == 1) //Serial Mode
 			{
-				
-				pRowByRowSql2Csv(query, dirpath, fileName, delimiter, useQuoteIdentifier,  encoding, dateformat, decimalSeparator, "serial", servername, sformat);
+
+				pRowByRowSql2Csv(query, dirpath, fileName, delimiter, useQuoteIdentifier, encoding, dateformat, decimalSeparator, "serial", servername, sformat);
 			}
-			else
+			else // Parallel Mode(s)
 			{
 				int imaxdop = (int)maxdop;
 				int cpucount = Environment.ProcessorCount;
-				if (imaxdop> cpucount)
+				if (imaxdop > cpucount || imaxdop==0)
 				{
-					imaxdop = cpucount; //protection
+					imaxdop = cpucount; //protection or autoparallel
 				}
 
 				SqlInt32 voverWriteExisting = 1;
@@ -89,11 +96,13 @@ namespace ExportSql
 					ParallelLoopResult pr = Parallel.For(0, imaxdop, i =>
 					{
 
-						var	sqlWhereParallelFilter = " WHERE FLOOR(" + distributeKeyColumn.ToString() + "%" + imaxdop.ToString() + ") = " + i.ToString();
+						var sqlWhereParallelFilter = " WHERE FLOOR(" + distributeKeyColumn.ToString() + "%" + imaxdop.ToString() + ") = " + i.ToString();
 
-						SqlString parafileName = fileName + "_" + i.ToString("000");
+
 						SqlString parasql = query + sqlWhereParallelFilter;
 						parasql += " OPTION (MAXDOP 1)"; // parallel thread should run serial query to avoid overloading system
+
+						SqlString parafileName = $"{fileName}_chunck_{i.ToString("000")}.csv";
 
 						pRowByRowSql2Csv(parasql, dirpath, parafileName, delimiter, useQuoteIdentifier, encoding, dateformat, decimalSeparator, "parallel", servername, sformat);
 
@@ -104,15 +113,16 @@ namespace ExportSql
 				{
 
 					var ParallelOptions = new ParallelOptions { MaxDegreeOfParallelism = imaxdop };
-					
-					var DataDrivenValues  = $"WITH {RandomCTE} AS ( {sql}) SELECT DISTINCT {distributeKeyColumn} FROM {RandomCTE}";
+
+					var DataDrivenValues = $"WITH {RandomCTE} AS ( {sql}) SELECT DISTINCT {distributeKeyColumn} FROM {RandomCTE}";
 					SqlContext.Pipe.Send($"DataDrivenValuesQuery = {DataDrivenValues}");
 
 					SqlConnectionStringBuilder connStrBuilder = new SqlConnectionStringBuilder();
 					connStrBuilder.ContextConnection = true;
 					var _connectionString = connStrBuilder.ConnectionString;
-					
-					TypeCode ddvtypecode;					
+
+					// retrieve TypeCode of the Distribution "Column"
+					TypeCode ddvtypecode;
 					using (SqlConnection sqlConnection = new SqlConnection(_connectionString))
 					{
 						sqlConnection.Open();
@@ -123,6 +133,7 @@ namespace ExportSql
 						sqlConnection.Close();
 					}
 
+					// retrieve List of Values of the Distribution "Column"
 					var ddvresults = new List<string>();
 					using (SqlConnection sqlConnection = new SqlConnection(_connectionString))
 					{
@@ -131,8 +142,8 @@ namespace ExportSql
 						var sdrddv = sqrddvlist.ExecuteReader();
 						//ddvresults = SelectString(sdrddv);
 						while (sdrddv.Read())
-						{							
-							ddvresults.Add(GetString(sdrddv[0],"yyyy-MM-dd",0, nfi, ddvtypecode));
+						{
+							ddvresults.Add(GetString(sdrddv[0], "yyyy-MM-dd", 0, nfi, ddvtypecode));
 						}
 
 						SqlContext.Pipe.Send($"DataDrivenValueslist Completed : {ddvresults.Count}");
@@ -140,65 +151,76 @@ namespace ExportSql
 
 					}
 
+					// Parallel Foreach using list of values of the Distribution Column
 					ParallelLoopResult pr = Parallel.ForEach(ddvresults, ParallelOptions, ddvcurrent =>
 					{
-
-						
+						// Format the predicate value sent to the SQL Query
 						var predicatevalue = ddvtypecode switch
 						{
 							TypeCode.Int16 or TypeCode.Int32 or TypeCode.Int64 => $"{ddvcurrent}",
 							_ => $"'{ddvcurrent}'",
 						};
 						;
-					
 
 						var sqlWhereParallelFilter = $" WHERE {distributeKeyColumn} = {predicatevalue}";
-
-						SqlString parafileName = $"{fileName}_{ddvcurrent}.csv";
 						SqlString parasql = query + sqlWhereParallelFilter;
 						parasql += " OPTION (MAXDOP 1)"; // parallel thread should run serial query to avoid overloading system
+
+						SqlString parafileName = $"{fileName}_{ddvcurrent}.csv";
 
 						pRowByRowSql2Csv(parasql, dirpath, parafileName, delimiter, useQuoteIdentifier, encoding, dateformat, decimalSeparator, "parallel", servername, sformat);
 
 					});
 				}
-
-
-
-
-
-				// Merge temp files after parallel loop
-
-				var stopwatch = new Stopwatch();				
-				stopwatch.Start();				
-				
-				const int CHUNKSIZE = 32 * 1024 * 1024; //32MB
-				using (FileStream fsNew = new FileStream(FullFileName, FileMode.Create, FileAccess.Write))
-				{
-					foreach(var file in Directory.EnumerateFiles(dirpath))
-					{
-						SqlContext.Pipe.Send($"File Searched = {file}");
-						try
-						{
-							using (FileStream fsSource = new FileStream(file, FileMode.Open, FileAccess.Read))
-								fsSource.CopyTo(fsNew,CHUNKSIZE);
-							// delete temp file
-							File.Delete(file);
-						}
-
-						catch (FileNotFoundException ioEx)
-						{
-							Console.WriteLine(ioEx.Message);
-						}
-					}
-				}
-				stopwatch.Stop();				
-				SqlContext.Pipe.Send($"Merge temp files Elasped : {stopwatch.ElapsedMilliseconds}");
-
-				//Cleanup
-				Directory.Delete(dirpath, false);
-
 			}
+
+
+
+
+
+				
+				if (maxdop == 1)
+				{
+					SqlContext.Pipe.Send($"Move Start");
+					File.Move(TempFullFileName, FullFileName);
+					SqlContext.Pipe.Send($"Move from {TempFullFileName} to {FullFileName}");
+					//Cleanup
+					Directory.Delete(dirpath, false);
+				}
+				else {
+					if (mergeDistributedFile) // Merge temp files after parallel loop
+					{
+						var stopwatch = new Stopwatch();
+						stopwatch.Start();
+
+						const int CHUNKSIZE = 32 * 1024 * 1024; //32MB
+						using (FileStream fsNew = new FileStream(FullFileName, FileMode.Create, FileAccess.Write))
+						{
+							foreach (var file in Directory.EnumerateFiles(dirpath))
+							{
+								SqlContext.Pipe.Send($"File Searched = {file}");
+								try
+								{
+									using (FileStream fsSource = new FileStream(file, FileMode.Open, FileAccess.Read))
+										fsSource.CopyTo(fsNew, CHUNKSIZE);
+									// delete temp file
+									File.Delete(file);
+								}
+
+								catch (FileNotFoundException ioEx)
+								{
+									Console.WriteLine(ioEx.Message);
+								}
+							}
+						}
+						stopwatch.Stop();
+						SqlContext.Pipe.Send($"Merge temp files Elasped : {stopwatch.ElapsedMilliseconds}");
+
+						Directory.Delete(dirpath, false);
+					}
+				}				
+
+			
 
 		}
 
@@ -208,17 +230,10 @@ namespace ExportSql
 
 			string _connectionString = "";
 
-			//var DataTypesDict = new Dictionary<int, Type>();
-
-			filePath = FormatPath(filePath.ToString());
-			fileName = FormatFileName(fileName.ToString());
-
-			var query = inputsql.ToString();
-			var vdelimiter = delimiter.ToString();
 			var vuseQuoteIdentifier = useQuoteIdentifier.Value;
-
-			var fileNameWithPath = filePath + fileName;
-			var FullFileName = fileNameWithPath.ToString();
+			var vquery = inputsql.ToString();
+			var vdelimiter = delimiter.ToString();
+			var FullFileName = Path.Combine(filePath.ToString(), fileName.ToString());
 
 			var encode = Encoding.Default;
 
@@ -239,9 +254,9 @@ namespace ExportSql
 			{
 
 				sqlConnection.Open();
-				var sqr = new SqlCommand(query, sqlConnection);
+				var sqr = new SqlCommand(vquery, sqlConnection);
 				var sdr = sqr.ExecuteReader((System.Data.CommandBehavior)0x2); //SchemaOnly
-				var sw = new StreamWriter(new FileStream(FullFileName, overWriteExisting ? FileMode.Create : FileMode.Append, FileAccess.Write), encode);
+				var sw = new StreamWriter(new FileStream(FullFileName, overWriteExisting ? FileMode.CreateNew : FileMode.Append, FileAccess.Write), encode);
 				try
 				{
 
@@ -301,17 +316,13 @@ namespace ExportSql
 
 			string srvName = serverName.ToString();
 
-			filePath = FormatPath(filePath.ToString());
-			fileName = FormatFileName(fileName.ToString());
-
-			var query = inputsql.ToString();
+			var vquery = inputsql.ToString();
 			var vdelimiter = delimiter.ToString();
 			var vdateformat = dateformat.ToString();
 			var vuseQuoteIdentifier = useQuoteIdentifier.Value;
 			var vdecimalSeparator = decimalSeparator.ToString();
 
-			var fileNameWithPath = filePath + fileName;
-			var FullFileName = fileNameWithPath.ToString();
+			var FullFileName = Path.Combine(filePath.ToString(), fileName.ToString());
 
 			var encode = Encoding.Default;
 
@@ -332,7 +343,7 @@ namespace ExportSql
 			{
 				
 				SqlConnectionStringBuilder connStrBuilder = new SqlConnectionStringBuilder();
-				//build connection string, which will be used to execute sql in threads
+				//build connection string, which will be used to execute sql in threads for parallel mode
 
 				connStrBuilder.DataSource = srvName;
 				connStrBuilder.ApplicationName = "CLRExportSQL";
@@ -361,7 +372,7 @@ namespace ExportSql
 
 
 				sqlConnection.Open();
-				var sqr = new SqlCommand(query, sqlConnection);
+				var sqr = new SqlCommand(vquery, sqlConnection);
 				var sdr = sqr.ExecuteReader();
 				var sw = new StreamWriter(new FileStream(FullFileName, FileMode.Append, FileAccess.Write), encode); //using stream (Conseil N Brero)
 				try
@@ -395,8 +406,7 @@ namespace ExportSql
 						rcount++;
 
 					}
-					//sw.WriteLine(strbuilder.ToString());
-					//sw.WriteLine(string.Join(vdelimiter, colarray));
+
 
 
 
@@ -417,19 +427,7 @@ namespace ExportSql
 
 			}
 		}
-		private static string FormatPath(string filePath)
-		{
-			if (Right(filePath, 1) == @"\")
-			{
-				filePath = filePath.Trim();
-			}
-			else
-			{
-				filePath = filePath.ToString().Trim() + @"\";
-			}
 
-			return filePath;
-		}
 
 		private static string GetServiceName()
 		{
@@ -462,25 +460,6 @@ namespace ExportSql
 			return servicename;
 
 		}
-
-		private static string FormatFileName(string fileName)
-		{
-			if (fileName.Substring(0, 1) == @"\")
-			{
-				return fileName.Substring(1).Trim();
-			}
-
-			return fileName.Trim();
-		}
-
-		private static string Right(string value, int length)
-		{
-			if (String.IsNullOrEmpty(value)) return string.Empty;
-
-			return value.Substring(value.Length - length);
-		}
-
-
 
 
 		//inlining ?
